@@ -262,6 +262,9 @@ Error Arguments::parse(const char* args) {
             CASE("filter")
                 _filter = value == NULL ? "" : value;
 
+            CASE("threadnames")
+                _filter_thread_names = value == NULL ? "" : value;
+
             CASE("include")
                 if (value != NULL) appendToEmbeddedList(_include, value);
 

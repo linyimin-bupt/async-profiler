@@ -165,6 +165,7 @@ class Arguments {
     const char* _title;
     double _minwidth;
     bool _reverse;
+    const char* _filter_thread_names;
 
     Arguments(bool persistent = false) :
         _buf(NULL),
@@ -183,6 +184,7 @@ class Arguments {
         _file(NULL),
         _log(NULL),
         _filter(NULL),
+        _filter_thread_names(NULL),
         _include(0),
         _exclude(0),
         _loop(false),

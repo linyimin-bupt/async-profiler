@@ -64,6 +64,26 @@ void ThreadFilter::init(const char* filter) {
     _enabled = true;
 }
 
+void ThreadFilter::init_with_name(const char* filter) {
+    if (filter == NULL) {
+        return;
+    }
+
+    char filter_copy[64];
+    strcpy(filter_copy, filter);
+
+    for (char* arg = strtok(filter_copy, ","); arg != NULL; arg = strtok(NULL, ",")) {
+        _target_threads.insert(arg);
+    }
+
+    _enabled = true;
+
+}
+
+void ThreadFilter::cache(int thread_id, std::string thread_name) {
+    _thread_cache[thread_id] = thread_name;
+}
+
 void ThreadFilter::clear() {
     for (int i = 0; i < MAX_BITMAPS; i++) {
         if (_bitmap[i] != NULL) {
@@ -74,6 +94,15 @@ void ThreadFilter::clear() {
 }
 
 bool ThreadFilter::accept(int thread_id) {
+
+    if (_thread_cache.find(thread_id) != _thread_cache.end()) {
+        std::string thread_name = _thread_cache.at(thread_id);
+        std::set<std::string>::iterator it = _target_threads.find(thread_name);
+        if (it != _target_threads.end()) {
+            return true;
+        }
+    }
+
     u32* b = bitmap(thread_id);
     return b != NULL && (word(b, thread_id) & (1 << (thread_id & 0x1f)));
 }
@@ -96,6 +125,9 @@ void ThreadFilter::add(int thread_id) {
 }
 
 void ThreadFilter::remove(int thread_id) {
+
+    _thread_cache.erase(thread_id);
+
     u32* b = bitmap(thread_id);
     if (b == NULL) {
         return;

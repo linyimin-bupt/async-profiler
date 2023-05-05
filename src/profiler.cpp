@@ -120,6 +120,21 @@ void Profiler::onThreadStart(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
         _thread_filter.remove(OS::threadId());
     }
     updateThreadName(jvmti, jni, thread);
+
+    // 获取Java主线程名称
+    jclass threadClass = jni->FindClass("java/lang/Thread");
+    jmethodID currentThreadMethod = jni->GetStaticMethodID(threadClass, "currentThread", "()Ljava/lang/Thread;");
+    jobject mainThread = jni->CallStaticObjectMethod(threadClass, currentThreadMethod);
+    jmethodID getNameMethod = jni->GetMethodID(threadClass, "getName", "()Ljava/lang/String;");
+    jstring threadName = (jstring)jni->CallObjectMethod(mainThread, getNameMethod);
+    const char *nameStr = jni->GetStringUTFChars(threadName, NULL);
+    std::string threadNameStr(nameStr);
+    jni->ReleaseStringUTFChars(threadName, nameStr);
+
+    _thread_filter.cache(OS::threadId(), threadNameStr);
+
+//    std::cout << "thread id: " << OS::threadId() << "thread name: " << threadNameStr << std::endl;
+
 }
 
 void Profiler::onThreadEnd(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
@@ -968,6 +983,7 @@ Error Profiler::start(Arguments& args, bool reset) {
     _add_sched_frame = args._sched;
     _update_thread_names = args._threads || args._output == OUTPUT_JFR;
     _thread_filter.init(args._filter);
+    _thread_filter.init_with_name(args._filter_thread_names);
 
     _engine = selectEngine(args._event);
     _cstack = args._cstack;

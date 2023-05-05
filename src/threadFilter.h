@@ -19,6 +19,8 @@
 
 #include <vector>
 #include "arch.h"
+#include <map>
+#include <set>
 
 
 // The size of thread ID bitmap in bytes. Must be at least 64K to allow mmap()
@@ -36,6 +38,8 @@ class ThreadFilter {
     u32* _bitmap[MAX_BITMAPS];
     bool _enabled;
     volatile int _size;
+    std::map<int, std::string> _thread_cache;
+    std::set<std::string> _target_threads;
 
     u32* bitmap(int thread_id) {
         return _bitmap[(u32)thread_id / BITMAP_CAPACITY];
@@ -54,7 +58,7 @@ class ThreadFilter {
     }
 
     int size() {
-        return _size;
+        return _size + _target_threads.size();
     }
 
     void init(const char* filter);
@@ -63,6 +67,9 @@ class ThreadFilter {
     bool accept(int thread_id);
     void add(int thread_id);
     void remove(int thread_id);
+
+    void init_with_name(const char* filter);
+    void cache(int thread_id, std::string thread_name);
 
     void collect(std::vector<int>& v);
 };
