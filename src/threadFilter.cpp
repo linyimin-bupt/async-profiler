@@ -18,6 +18,7 @@
 #include <string.h>
 #include "threadFilter.h"
 #include "os.h"
+#include <regex>
 
     
 ThreadFilter::ThreadFilter() {
@@ -97,9 +98,11 @@ bool ThreadFilter::accept(int thread_id) {
 
     if (_thread_cache.find(thread_id) != _thread_cache.end()) {
         std::string thread_name = _thread_cache.at(thread_id);
-        std::set<std::string>::iterator it = _target_threads.find(thread_name);
-        if (it != _target_threads.end()) {
-            return true;
+
+        for (std::set<std::string>::iterator it = _target_threads.begin(); it != _target_threads.end(); ++it) {
+            if (std::regex_match(thread_name, std::regex(*it))) {
+                return true;
+            }
         }
     }
 
