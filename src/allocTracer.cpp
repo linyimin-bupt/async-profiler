@@ -31,7 +31,7 @@ volatile u64 AllocTracer::_allocated_bytes;
 // Called whenever our breakpoint trap is hit
 void AllocTracer::trapHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     StackFrame frame(ucontext);
-    int event_type;
+    EventType event_type;
     uintptr_t total_size;
     uintptr_t instance_size;
 
@@ -39,13 +39,13 @@ void AllocTracer::trapHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     if (_in_new_tlab.covers(frame.pc())) {
         // send_allocation_in_new_tlab(Klass* klass, HeapWord* obj, size_t tlab_size, size_t alloc_size, Thread* thread)
         // send_allocation_in_new_tlab_event(KlassHandle klass, size_t tlab_size, size_t alloc_size)
-        event_type = BCI_ALLOC;
+        event_type = ALLOC_SAMPLE;
         total_size = _trap_kind == 1 ? frame.arg2() : frame.arg1();
         instance_size = _trap_kind == 1 ? frame.arg3() : frame.arg2();
     } else if (_outside_tlab.covers(frame.pc())) {
         // send_allocation_outside_tlab(Klass* klass, HeapWord* obj, size_t alloc_size, Thread* thread)
         // send_allocation_outside_tlab_event(KlassHandle klass, size_t alloc_size);
-        event_type = BCI_ALLOC_OUTSIDE_TLAB;
+        event_type = ALLOC_OUTSIDE_TLAB;
         total_size = _trap_kind == 1 ? frame.arg2() : frame.arg1();
         instance_size = 0;
     } else {
@@ -58,17 +58,13 @@ void AllocTracer::trapHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     uintptr_t klass = frame.arg0();
     frame.ret();
 
-    if (_enabled) {
+    if (_enabled && updateCounter(_allocated_bytes, total_size, _interval)) {
         recordAllocation(ucontext, event_type, klass, total_size, instance_size);
     }
 }
 
-void AllocTracer::recordAllocation(void* ucontext, int event_type, uintptr_t rklass,
+void AllocTracer::recordAllocation(void* ucontext, EventType event_type, uintptr_t rklass,
                                    uintptr_t total_size, uintptr_t instance_size) {
-    if (!updateCounter(_allocated_bytes, total_size, _interval)) {
-        return;
-    }
-
     AllocEvent event;
     event._class_id = 0;
     event._total_size = total_size;
@@ -83,6 +79,10 @@ void AllocTracer::recordAllocation(void* ucontext, int event_type, uintptr_t rkl
 }
 
 Error AllocTracer::check(Arguments& args) {
+    if (args._live) {
+        return Error("'live' option is supported on OpenJDK 11+");
+    }
+
     if (_in_new_tlab.entry() != 0 && _outside_tlab.entry() != 0) {
         return Error::OK;
     }
@@ -117,7 +117,7 @@ Error AllocTracer::start(Arguments& args) {
         return error;
     }
 
-    _interval = args._alloc;
+    _interval = args._alloc > 0 ? args._alloc : 0;
     _allocated_bytes = 0;
 
     if (!_in_new_tlab.install() || !_outside_tlab.install()) {

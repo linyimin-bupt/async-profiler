@@ -37,6 +37,7 @@ class VMStructs {
     static int _symbol_length_offset;
     static int _symbol_length_and_refcount_offset;
     static int _symbol_body_offset;
+    static int _oop_klass_offset;
     static int _class_loader_data_offset;
     static int _class_loader_data_next_offset;
     static int _methods_offset;
@@ -51,7 +52,11 @@ class VMStructs {
     static int _frame_complete_offset;
     static int _nmethod_name_offset;
     static int _nmethod_method_offset;
-    static int _constmethod_offset;
+    static int _nmethod_entry_offset;
+    static int _nmethod_state_offset;
+    static int _nmethod_level_offset;
+    static int _method_constmethod_offset;
+    static int _method_code_offset;
     static int _constmethod_constants_offset;
     static int _constmethod_idnum_offset;
     static int _pool_holder_offset;
@@ -75,6 +80,15 @@ class VMStructs {
     static const void** _code_heap_low_addr;
     static const void** _code_heap_high_addr;
     static int* _klass_offset_addr;
+    static char** _narrow_klass_base_addr;
+    static char* _narrow_klass_base;
+    static int* _narrow_klass_shift_addr;
+    static int _narrow_klass_shift;
+    static char** _collected_heap_addr;
+    static char* _collected_heap;
+    static int _collected_heap_reserved_offset;
+    static int _region_start_offset;
+    static int _region_size_offset;
 
     static jfieldID _eetop;
     static jfieldID _tid;
@@ -126,10 +140,6 @@ class VMStructs {
                                             jint start_depth, jint max_frame_count,
                                             jvmtiFrameInfo* frame_buffer, jint* count_ptr);
     static GetStackTraceFunc _get_stack_trace;
-
-    static bool hasDebugSymbols() {
-        return _get_stack_trace != NULL;
-    }
 };
 
 
@@ -151,6 +161,8 @@ class MethodList {
     }
 };
 
+
+class NMethod;
 
 class VMSymbol : VMStructs {
   public:
@@ -206,6 +218,15 @@ class VMKlass : VMStructs {
             return (VMKlass*)(*(uintptr_t**)handle + 2);
         } else {
             return (VMKlass*)handle;
+        }
+    }
+
+    static VMKlass* fromOop(uintptr_t oop) {
+        uintptr_t ptr = oop + _oop_klass_offset;
+        if (_narrow_klass_shift >= 0) {
+            return (VMKlass*)(_narrow_klass_base + ((uintptr_t)*(unsigned int*)ptr << _narrow_klass_shift));
+        } else {
+            return *(VMKlass**)ptr;
         }
     }
 
@@ -267,15 +288,16 @@ class VMThread : VMStructs {
     }
 };
 
-class ConstMethod : VMStructs {
-  public:
-    jmethodID id();
-};
-
 class VMMethod : VMStructs {
   public:
-    ConstMethod* constMethod() {
-        return *(ConstMethod**) at(_constmethod_offset);
+    static VMMethod* fromMethodID(jmethodID id) {
+        return *(VMMethod**)id;
+    }
+
+    jmethodID id();
+
+    NMethod* code() {
+        return *(NMethod**) at(_method_code_offset);
     }
 };
 
@@ -302,8 +324,29 @@ class NMethod : VMStructs {
         return n != NULL && (strcmp(n, "nmethod") == 0 || strcmp(n, "native nmethod") == 0);
     }
 
+    bool isInterpreter() {
+        const char* n = name();
+        return n != NULL && strcmp(n, "Interpreter") == 0;
+    }
+
     VMMethod* method() {
         return *(VMMethod**) at(_nmethod_method_offset);
+    }
+
+    void* entry() {
+        return *(void**) at(_nmethod_entry_offset);
+    }
+
+    char state() {
+        return *at(_nmethod_state_offset);
+    }
+
+    bool isAlive() {
+        return state() >= 0 && state() <= 1;
+    }
+
+    int level() {
+        return _nmethod_level_offset >= 0 ? *(int*) at(_nmethod_level_offset) : 0;
     }
 };
 
@@ -340,6 +383,21 @@ class CodeHeap : VMStructs {
         if (contains(_code_heap[1], pc)) return findNMethod(_code_heap[1], pc);
         if (contains(_code_heap[2], pc)) return findNMethod(_code_heap[2], pc);
         return NULL;
+    }
+};
+
+class CollectedHeap : VMStructs {
+  public:
+    static CollectedHeap* heap() {
+        return (CollectedHeap*)_collected_heap;
+    }
+
+    uintptr_t start() {
+        return *(uintptr_t*) at(_region_start_offset);
+    }
+
+    uintptr_t size() {
+        return (*(uintptr_t*) at(_region_size_offset)) * sizeof(uintptr_t);
     }
 };
 

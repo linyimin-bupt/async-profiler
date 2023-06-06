@@ -94,6 +94,16 @@ void ThreadFilter::clear() {
     _size = 0;
 }
 
+size_t ThreadFilter::usedMemory() {
+    size_t bytes = 0;
+    for (int i = 0; i < MAX_BITMAPS; i++) {
+        if (_bitmap[i] != NULL) {
+            bytes += BITMAP_SIZE;
+        }
+    }
+    return bytes;
+}
+
 bool ThreadFilter::accept(int thread_id) {
 
     if (_thread_cache.find(thread_id) != _thread_cache.end()) {

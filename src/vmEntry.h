@@ -23,7 +23,7 @@
 #ifdef __clang__
 #  define DLLEXPORT __attribute__((visibility("default")))
 #else
-#  define DLLEXPORT __attribute__((externally_visible))
+#  define DLLEXPORT __attribute__((visibility("default"),externally_visible))
 #endif
 
 
@@ -34,18 +34,31 @@ enum FrameTypeId {
     FRAME_NATIVE       = 3,
     FRAME_CPP          = 4,
     FRAME_KERNEL       = 5,
+    FRAME_C1_COMPILED  = 6,
 };
+
+class FrameType {
+  public:
+    static inline int encode(int type, int bci) {
+        return (1 << 24) | (type << 25) | (bci & 0xffffff);
+    }
+
+    static inline FrameTypeId decode(int bci) {
+        return (bci >> 24) > 0 ? (FrameTypeId)(bci >> 25) : FRAME_JIT_COMPILED;
+    }
+};
+
 
 // Denotes ASGCT_CallFrame where method_id has special meaning (not jmethodID)
 enum ASGCT_CallFrameType {
     BCI_NATIVE_FRAME        = -10,  // native function name (char*)
     BCI_ALLOC               = -11,  // name of the allocated class
     BCI_ALLOC_OUTSIDE_TLAB  = -12,  // name of the class allocated outside TLAB
-    BCI_LOCK                = -13,  // class name of the locked object
-    BCI_PARK                = -14,  // class name of the park() blocker
-    BCI_THREAD_ID           = -15,  // method_id designates a thread
-    BCI_ERROR               = -16,  // method_id is an error string
-    BCI_INSTRUMENT          = -17,  // synthetic method_id that should not appear in the call stack
+    BCI_LIVE_OBJECT         = -13,  // name of the allocated class
+    BCI_LOCK                = -14,  // class name of the locked object
+    BCI_PARK                = -15,  // class name of the park() blocker
+    BCI_THREAD_ID           = -16,  // method_id designates a thread
+    BCI_ERROR               = -17,  // method_id is an error string
 };
 
 // See hotspot/src/share/vm/prims/forte.cpp
@@ -85,6 +98,8 @@ typedef struct {
 
 typedef VMManagement* (*JVM_GetManagement)(jint);
 
+typedef jlong (*JVM_MemoryFunc)();
+
 typedef struct {
     void* unused1[86];
     jvmtiError (JNICALL *RedefineClasses)(jvmtiEnv*, jint, const jvmtiClassDefinition*);
@@ -100,11 +115,14 @@ class VM {
 
     static int _hotspot_version;
     static bool _openj9;
+    static bool _zing;
+    static bool _can_sample_objects;
 
     static jvmtiError (JNICALL *_orig_RedefineClasses)(jvmtiEnv*, jint, const jvmtiClassDefinition*);
     static jvmtiError (JNICALL *_orig_RetransformClasses)(jvmtiEnv*, jint, const jclass* classes);
 
     static void ready();
+    static void applyPatch(char* func, const char* patch, const char* end_patch);
     static void* getLibraryHandle(const char* name);
     static void loadMethodIDs(jvmtiEnv* jvmti, JNIEnv* jni, jclass klass);
     static void loadAllMethodIDs(jvmtiEnv* jvmti, JNIEnv* jni);
@@ -114,6 +132,8 @@ class VM {
     static void* _libjava;
     static AsyncGetCallTrace _asyncGetCallTrace;
     static JVM_GetManagement _getManagement;
+    static JVM_MemoryFunc _totalMemory;
+    static JVM_MemoryFunc _freeMemory;
 
     static bool init(JavaVM* vm, bool attach);
 
@@ -148,6 +168,14 @@ class VM {
 
     static bool isOpenJ9() {
         return _openj9;
+    }
+
+    static bool isZing() {
+        return _zing;
+    }
+
+    static bool canSampleObjects() {
+        return _can_sample_objects;
     }
 
     static void JNICALL VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread);

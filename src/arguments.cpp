@@ -59,11 +59,14 @@ static const Multiplier UNIVERSAL[] = {{'n', 1}, {'u', 1000}, {'m', 1000000}, {'
 //     dump             - dump collected data without stopping profiling session
 //     check            - check if the specified profiling event is available
 //     status           - print profiling status (inactive / running for X seconds)
+//     meminfo          - print profiler memory stats
 //     list             - show the list of available profiling events
-//     version[=full]   - display the agent version
+//     version          - display the agent version
 //     event=EVENT      - which event to trace (cpu, wall, cache-misses, etc.)
 //     alloc[=BYTES]    - profile allocations with BYTES interval
+//     live             - build allocation profile from live objects only
 //     lock[=DURATION]  - profile contended locks longer than DURATION ns
+//     wall[=NS]        - run wall clock profiling together with CPU profiling
 //     collapsed        - dump collapsed stacks (the format used by FlameGraph script)
 //     flamegraph       - produce Flame Graph in HTML format
 //     tree             - produce call tree in HTML format
@@ -82,19 +85,23 @@ static const Multiplier UNIVERSAL[] = {{'n', 1}, {'u', 1000}, {'m', 1000000}, {'
 //     safemode=BITS    - disable stack recovery techniques (default: 0, i.e. everything enabled)
 //     file=FILENAME    - output file name for dumping
 //     log=FILENAME     - log warnings and errors to the given dedicated stream
+//     loglevel=LEVEL   - logging level: TRACE, DEBUG, INFO, WARN, ERROR, or NONE
+//     server=ADDRESS   - start insecure HTTP server at ADDRESS/PORT
 //     filter=FILTER    - thread filter
 //     threads          - profile different threads separately
 //     sched            - group threads by scheduling policy
 //     cstack=MODE      - how to collect C stack frames in addition to Java stack
 //                        MODE is 'fp' (Frame Pointer), 'dwarf', 'lbr' (Last Branch Record) or 'no'
+//     clock=SOURCE     - clock source for JFR timestamps: 'tsc' or 'monotonic'
 //     allkernel        - include only kernel-mode events
 //     alluser          - include only user-mode events
 //     fdtransfer       - use fdtransfer to pass fds to the profiler
 //     simple           - simple class names instead of FQN
 //     dot              - dotted class names
 //     sig              - print method signatures
-//     ann              - annotate Java method names
+//     ann              - annotate Java methods
 //     lib              - prepend library names
+//     mcache           - max age of jmethodID cache (default: 0 = disabled)
 //     include=PATTERN  - include stack traces containing PATTERN
 //     exclude=PATTERN  - exclude stack traces containing PATTERN
 //     begin=FUNCTION   - begin profiling when FUNCTION is executed
@@ -144,11 +151,14 @@ Error Arguments::parse(const char* args) {
             CASE("status")
                 _action = ACTION_STATUS;
 
+            CASE("meminfo")
+                _action = ACTION_MEMINFO;
+
             CASE("list")
                 _action = ACTION_LIST;
 
             CASE("version")
-                _action = value == NULL ? ACTION_VERSION : ACTION_FULL_VERSION;
+                _action = ACTION_VERSION;
 
             // Output formats
             CASE("collapsed")
@@ -200,9 +210,9 @@ Error Arguments::parse(const char* args) {
                 if (value == NULL || value[0] == 0) {
                     msg = "event must not be empty";
                 } else if (strcmp(value, EVENT_ALLOC) == 0) {
-                    if (_alloc <= 0) _alloc = 1;
+                    if (_alloc < 0) _alloc = 0;
                 } else if (strcmp(value, EVENT_LOCK) == 0) {
-                    if (_lock <= 0) _lock = 1;
+                    if (_lock < 0) _lock = 0;
                 } else if (_event != NULL) {
                     msg = "Duplicate event argument";
                 } else {
@@ -221,16 +231,13 @@ Error Arguments::parse(const char* args) {
                 }
 
             CASE("alloc")
-                _alloc = value == NULL ? 1 : parseUnits(value, BYTES);
-                if (_alloc < 0) {
-                    msg = "alloc must be >= 0";
-                }
+                _alloc = value == NULL ? 0 : parseUnits(value, BYTES);
 
             CASE("lock")
-                _lock = value == NULL ? 1 : parseUnits(value, NANOS);
-                if (_lock < 0) {
-                    msg = "lock must be >= 0";
-                }
+                _lock = value == NULL ? 0 : parseUnits(value, NANOS);
+
+            CASE("wall")
+                _wall = value == NULL ? 0 : parseUnits(value, NANOS);
 
             CASE("interval")
                 if (value == NULL || (_interval = parseUnits(value, UNIVERSAL)) <= 0) {
@@ -254,8 +261,23 @@ Error Arguments::parse(const char* args) {
             CASE("log")
                 _log = value == NULL || value[0] == 0 ? NULL : value;
 
+            CASE("loglevel")
+                if (value == NULL || value[0] == 0) {
+                    msg = "loglevel must not be empty";
+                }
+                _loglevel = value;
+
+            CASE("server")
+                if (value == NULL || value[0] == 0) {
+                    msg = "server address must not be empty";
+                }
+                _server = value;
+
             CASE("fdtransfer")
                 _fdtransfer = true;
+                if (value == NULL || value[0] == 0) {
+                    msg = "fdtransfer path must not be empty";
+                }
                 _fdtransfer_path = value;
 
             // Filters
@@ -266,16 +288,21 @@ Error Arguments::parse(const char* args) {
                 _filter_thread_names = value == NULL ? "" : value;
 
             CASE("include")
-                if (value != NULL) appendToEmbeddedList(_include, value);
+                // Workaround -Wstringop-overflow warning
+                if (value == arg + 8) appendToEmbeddedList(_include, arg + 8);
 
             CASE("exclude")
-                if (value != NULL) appendToEmbeddedList(_exclude, value);
+                // Workaround -Wstringop-overflow warning
+                if (value == arg + 8) appendToEmbeddedList(_exclude, arg + 8);
 
             CASE("threads")
                 _threads = true;
 
             CASE("sched")
                 _sched = true;
+
+            CASE("live")
+                _live = true;
 
             CASE("allkernel")
                 _ring = RING_KERNEL;
@@ -296,6 +323,15 @@ Error Arguments::parse(const char* args) {
                     }
                 }
 
+            CASE("clock")
+                if (value != NULL) {
+                    if (value[0] == 't') {
+                        _clock = CLK_TSC;
+                    } else if (value[0] == 'm') {
+                        _clock = CLK_MONOTONIC;
+                    }
+                }
+
             // Output style modifiers
             CASE("simple")
                 _style |= STYLE_SIMPLE;
@@ -311,6 +347,9 @@ Error Arguments::parse(const char* args) {
 
             CASE("lib")
                 _style |= STYLE_LIB_NAMES;
+
+            CASE("mcache")
+                _mcache = value == NULL ? 1 : (unsigned char)strtol(value, NULL, 0);
 
             CASE("begin")
                 _begin = value;
@@ -329,7 +368,7 @@ Error Arguments::parse(const char* args) {
                 _reverse = true;
 
             DEFAULT()
-                msg = "Unknown argument";
+                if (_unknown_arg == NULL) _unknown_arg = arg;
         }
     }
 
@@ -338,7 +377,7 @@ Error Arguments::parse(const char* args) {
         return Error(msg);
     }
 
-    if (_event == NULL && _alloc == 0 && _lock == 0) {
+    if (_event == NULL && _alloc < 0 && _lock < 0 && _wall < 0) {
         _event = EVENT_CPU;
     }
 
@@ -360,7 +399,7 @@ Error Arguments::parse(const char* args) {
 
 const char* Arguments::file() {
     if (_file != NULL && strchr(_file, '%') != NULL) {
-        return expandFilePattern(_buf, EXTRA_BUF_SIZE - 1, _file);
+        return expandFilePattern(_file);
     }
     return _file;
 }
@@ -380,11 +419,14 @@ long long Arguments::hash(const char* arg) {
     return h;
 }
 
-// Expands %p to the process id
-//         %t to the timestamp
-const char* Arguments::expandFilePattern(char* dest, size_t max_size, const char* pattern) {
-    char* ptr = dest;
-    char* end = dest + max_size - 1;
+// Expands the following patterns:
+//   %p       process id
+//   %t       timestamp (yyyyMMdd-hhmmss)
+//   %n{MAX}  sequence number
+//   %{ENV}   environment variable
+const char* Arguments::expandFilePattern(const char* pattern) {
+    char* ptr = _buf;
+    char* end = _buf + EXTRA_BUF_SIZE - 1;
 
     while (ptr < end && *pattern != 0) {
         char c = *pattern++;
@@ -402,6 +444,15 @@ const char* Arguments::expandFilePattern(char* dest, size_t max_size, const char
                 ptr += snprintf(ptr, end - ptr, "%d%02d%02d-%02d%02d%02d",
                                 t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
                                 t.tm_hour, t.tm_min, t.tm_sec);
+                continue;
+            } else if (c == 'n') {
+                unsigned int max_files = 0;
+                const char* p;
+                if (*pattern == '{' && (p = strchr(pattern, '}')) != NULL) {
+                    max_files = atoi(pattern + 1);
+                    pattern = p + 1;
+                }
+                ptr += snprintf(ptr, end - ptr, "%u", max_files > 0 ? _file_num % max_files : _file_num);
                 continue;
             } else if (c == '{') {
                 char env_key[128];
@@ -421,8 +472,8 @@ const char* Arguments::expandFilePattern(char* dest, size_t max_size, const char
         *ptr++ = c;
     }
 
-    *ptr = 0;
-    return dest;
+    *(ptr < end ? ptr : end) = 0;
+    return _buf;
 }
 
 Output Arguments::detectOutputFormat(const char* file) {
@@ -444,6 +495,9 @@ Output Arguments::detectOutputFormat(const char* file) {
 long Arguments::parseUnits(const char* str, const Multiplier* multipliers) {
     char* end;
     long result = strtol(str, &end, 0);
+    if (end == str) {
+        return -1;
+    }
 
     char c = *end;
     if (c == 0) {

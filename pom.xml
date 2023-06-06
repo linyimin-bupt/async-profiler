@@ -3,7 +3,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>tools.profiler</groupId>
     <artifactId>async-profiler</artifactId>
-    <version>2.7</version>
+    <version>2.9</version>
     <packaging>jar</packaging>
 
     <name>async-profiler</name>
@@ -36,20 +36,51 @@
 
     <build>
         <sourceDirectory>src/api</sourceDirectory>
+        <resources>
+            <resource>
+                <directory>native</directory>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.8.1</version>
                 <configuration>
-                    <source>1.6</source>
-                    <target>1.6</target>
+                    <source>7</source>
+                    <target>7</target>
                 </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.3.0</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                        <configuration>
+                            <classifier>${native.platform}</classifier>
+                            <includes>
+                                <include>${native.platform}/*</include>
+                                <include>one/**</include>
+                            </includes>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-source-plugin</artifactId>
                 <version>3.2.0</version>
+                <configuration>
+                    <excludes>
+                        <exclude>linux*/**</exclude>
+                        <exclude>macos*/**</exclude>
+                    </excludes>
+                </configuration>
                 <executions>
                     <execution>
                         <id>attach-sources</id>

@@ -19,6 +19,7 @@
 #include "vmStructs.h"
 #include "vmEntry.h"
 #include "j9Ext.h"
+#include "safeAccess.h"
 
 
 CodeCache* VMStructs::_libjvm = NULL;
@@ -33,6 +34,7 @@ int VMStructs::_klass_name_offset = -1;
 int VMStructs::_symbol_length_offset = -1;
 int VMStructs::_symbol_length_and_refcount_offset = -1;
 int VMStructs::_symbol_body_offset = -1;
+int VMStructs::_oop_klass_offset = -1;
 int VMStructs::_class_loader_data_offset = -1;
 int VMStructs::_class_loader_data_next_offset = -1;
 int VMStructs::_methods_offset = -1;
@@ -47,7 +49,11 @@ int VMStructs::_frame_size_offset = -1;
 int VMStructs::_frame_complete_offset = -1;
 int VMStructs::_nmethod_name_offset = -1;
 int VMStructs::_nmethod_method_offset = -1;
-int VMStructs::_constmethod_offset = -1;
+int VMStructs::_nmethod_entry_offset = -1;
+int VMStructs::_nmethod_state_offset = -1;
+int VMStructs::_nmethod_level_offset = -1;
+int VMStructs::_method_constmethod_offset = -1;
+int VMStructs::_method_code_offset = -1;
 int VMStructs::_constmethod_constants_offset = -1;
 int VMStructs::_constmethod_idnum_offset = -1;
 int VMStructs::_pool_holder_offset = -1;
@@ -71,6 +77,15 @@ char** VMStructs::_code_heap_addr = NULL;
 const void** VMStructs::_code_heap_low_addr = NULL;
 const void** VMStructs::_code_heap_high_addr = NULL;
 int* VMStructs::_klass_offset_addr = NULL;
+char** VMStructs::_narrow_klass_base_addr = NULL;
+char* VMStructs::_narrow_klass_base = NULL;
+int* VMStructs::_narrow_klass_shift_addr = NULL;
+int VMStructs::_narrow_klass_shift = -1;
+char** VMStructs::_collected_heap_addr = NULL;
+char* VMStructs::_collected_heap = NULL;
+int VMStructs::_collected_heap_reserved_offset = -1;
+int VMStructs::_region_start_offset = -1;
+int VMStructs::_region_size_offset = -1;
 
 jfieldID VMStructs::_eetop;
 jfieldID VMStructs::_tid;
@@ -140,13 +155,43 @@ void VMStructs::initOffsets() {
             } else if (strcmp(field, "_body") == 0) {
                 _symbol_body_offset = *(int*)(entry + offset_offset);
             }
+        } else if (strcmp(type, "oopDesc") == 0) {
+            if (strcmp(field, "_metadata._klass") == 0) {
+                _oop_klass_offset = *(int*)(entry + offset_offset);
+            }
+        } else if (strcmp(type, "Universe") == 0 || strcmp(type, "CompressedKlassPointers") == 0) {
+            if (strcmp(field, "_narrow_klass._base") == 0) {
+                _narrow_klass_base_addr = *(char***)(entry + address_offset);
+            } else if (strcmp(field, "_narrow_klass._shift") == 0) {
+                _narrow_klass_shift_addr = *(int**)(entry + address_offset);
+            } else if (strcmp(field, "_collectedHeap") == 0) {
+                _collected_heap_addr = *(char***)(entry + address_offset);
+            }
+        } else if (strcmp(type, "CollectedHeap") == 0) {
+            if (strcmp(field, "_reserved") == 0) {
+                _collected_heap_reserved_offset = *(int*)(entry + offset_offset);
+            }
+        } else if (strcmp(type, "MemRegion") == 0) {
+            if (strcmp(field, "_start") == 0) {
+                _region_start_offset = *(int*)(entry + offset_offset);
+            } else if (strcmp(field, "_word_size") == 0) {
+                _region_size_offset = *(int*)(entry + offset_offset);
+            }
         } else if (strcmp(type, "CompiledMethod") == 0 || strcmp(type, "nmethod") == 0) {
             if (strcmp(field, "_method") == 0) {
                 _nmethod_method_offset = *(int*)(entry + offset_offset);
+            } else if (strcmp(field, "_verified_entry_point") == 0) {
+                _nmethod_entry_offset = *(int*)(entry + offset_offset);
+            } else if (strcmp(field, "_state") == 0) {
+                _nmethod_state_offset = *(int*)(entry + offset_offset);
+            } else if (strcmp(field, "_comp_level") == 0) {
+                _nmethod_level_offset = *(int*)(entry + offset_offset);
             }
         } else if (strcmp(type, "Method") == 0) {
             if (strcmp(field, "_constMethod") == 0) {
-                _constmethod_offset = *(int*)(entry + offset_offset);
+                _method_constmethod_offset = *(int*)(entry + offset_offset);
+            } else if (strcmp(field, "_code") == 0) {
+                _method_code_offset = *(int*)(entry + offset_offset);
             }
         } else if (strcmp(type, "ConstMethod") == 0) {
             if (strcmp(field, "_constants") == 0) {
@@ -274,14 +319,24 @@ void VMStructs::resolveOffsets() {
         _klass = (jfieldID)(uintptr_t)(*_klass_offset_addr << 2 | 2);
     }
 
+    char* ccp = (char*)JVMFlag::find("UseCompressedClassPointers");
+    if (ccp != NULL && *ccp && _narrow_klass_base_addr != NULL && _narrow_klass_shift_addr != NULL) {
+        _narrow_klass_base = *_narrow_klass_base_addr;
+        _narrow_klass_shift = *_narrow_klass_shift_addr;
+    }
+
     _has_class_names = _klass_name_offset >= 0
+            && _oop_klass_offset >= 0
             && (_symbol_length_offset >= 0 || _symbol_length_and_refcount_offset >= 0)
             && _symbol_body_offset >= 0
             && _klass != NULL;
 
     _has_method_structs = _jmethod_ids_offset >= 0
             && _nmethod_method_offset >= 0
-            && _constmethod_offset >= 0
+            && _nmethod_entry_offset >= 0
+            && _nmethod_state_offset >= 0
+            && _method_constmethod_offset >= 0
+            && _method_code_offset >= 0
             && _constmethod_constants_offset >= 0
             && _constmethod_idnum_offset >= 0
             && _pool_holder_offset >= 0;
@@ -315,10 +370,17 @@ void VMStructs::resolveOffsets() {
         _code_heap_segment_shift < 0 || _code_heap_segment_shift > 16) {
         memset(_code_heap, 0, sizeof(_code_heap));
     }
+
+    if (_collected_heap_addr != NULL && _collected_heap_reserved_offset >= 0 &&
+        _region_start_offset >= 0 && _region_size_offset >= 0) {
+        _collected_heap = *_collected_heap_addr + _collected_heap_reserved_offset;
+    }
 }
 
 void VMStructs::initJvmFunctions() {
-    _get_stack_trace = (GetStackTraceFunc)_libjvm->findSymbolByPrefix("_ZN8JvmtiEnv13GetStackTraceEP10JavaThreadiiP");
+    if (!VM::isOpenJ9() && !VM::isZing()) {
+        _get_stack_trace = (GetStackTraceFunc)_libjvm->findSymbolByPrefix("_ZN8JvmtiEnv13GetStackTraceEP10JavaThreadiiP");
+    }
 
     if (VM::hotspot_version() == 8) {
         _lock_func = (LockFunc)_libjvm->findSymbol("_ZN7Monitor28lock_without_safepoint_checkEv");
@@ -374,10 +436,12 @@ void VMStructs::initLogging(JNIEnv* env) {
                 const char* s = env->GetStringUTFChars(log_config, NULL);
                 if (s != NULL) {
                     const char* p = strstr(s, "#0: ");
-                    const char* q;
-                    if (p != NULL && (p = strchr(p + 4, ' ')) != NULL && (p = strchr(p + 1, ' ')) != NULL &&
-                        (q = strchr(p + 1, '\n')) != NULL && q - p < sizeof(cmd) - 41) {
-                        memcpy(cmd + 41, p + 1, q - p - 1);
+                    if (p != NULL && (p = strchr(p + 4, ' ')) != NULL && (p = strchr(p + 1, ' ')) != NULL) {
+                        const char* q = p + 1;  // start of decorators
+                        while (*q > ' ') q++;
+                        if (q - p < sizeof(cmd) - 41) {
+                            memcpy(cmd + 41, p + 1, q - p - 1);
+                        }
                     }
                     env->ReleaseStringUTFChars(log_config, s);
                 }
@@ -400,9 +464,15 @@ int VMThread::nativeThreadId(JNIEnv* jni, jthread thread) {
     return J9Ext::GetOSThreadID(thread);
 }
 
-jmethodID ConstMethod::id() {
-    const char* cpool = *(const char**) at(_constmethod_constants_offset);
-    unsigned short num = *(unsigned short*) at(_constmethod_idnum_offset);
+jmethodID VMMethod::id() {
+    // We may find a bogus NMethod during stack walking, it does not always point to a valid VMMethod
+    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
+    if (const_method == NULL) {
+        return NULL;
+    }
+
+    const char* cpool = *(const char**) (const_method + _constmethod_constants_offset);
+    unsigned short num = *(unsigned short*) (const_method + _constmethod_idnum_offset);
     if (cpool != NULL) {
         VMKlass* holder = *(VMKlass**)(cpool + _pool_holder_offset);
         if (holder != NULL) {

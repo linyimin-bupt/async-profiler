@@ -16,14 +16,12 @@
 
 package one.jfr;
 
-import one.jfr.event.AllocationSample;
-import one.jfr.event.ContendedLock;
-import one.jfr.event.Event;
-import one.jfr.event.ExecutionSample;
+import one.jfr.event.*;
 
 import java.io.Closeable;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
@@ -45,12 +43,14 @@ public class JfrReader implements Closeable {
     private final FileChannel ch;
     private ByteBuffer buf;
     private long filePosition;
+    private boolean eof;
+    private boolean incomplete;
 
-    public boolean incomplete;
     public long startNanos = Long.MAX_VALUE;
     public long endNanos = Long.MIN_VALUE;
     public long startTicks = Long.MAX_VALUE;
     public long ticksPerSec;
+    public boolean stopAtNewChunk;
 
     public final Dictionary<JfrClass> types = new Dictionary<>();
     public final Map<String, JfrClass> typesByName = new HashMap<>();
@@ -68,8 +68,10 @@ public class JfrReader implements Closeable {
     private int allocationInNewTLAB;
     private int allocationOutsideTLAB;
     private int allocationSample;
+    private int liveObject;
     private int monitorEnter;
     private int threadPark;
+    private int gcHeapSummary;
     private int activeSetting;
     private boolean activeSettingHasStack;
 
@@ -84,13 +86,35 @@ public class JfrReader implements Closeable {
         }
     }
 
+    public JfrReader(ByteBuffer buf) throws IOException {
+        this.ch = null;
+        this.buf = buf;
+
+        buf.order(ByteOrder.BIG_ENDIAN);
+        if (!readChunk(0)) {
+            throw new IOException("Incomplete JFR file");
+        }
+    }
+
     @Override
     public void close() throws IOException {
         ch.close();
     }
 
+    public boolean eof() {
+        return eof;
+    }
+
+    public boolean incomplete() {
+        return incomplete;
+    }
+
     public long durationNanos() {
         return endNanos - startNanos;
+    }
+
+    public long nanosToTicks(long nanos) {
+        return (long) ((nanos - startNanos) * (ticksPerSec / 1e9)) + startTicks;
     }
 
     public List<Event> readAllEvents() throws IOException {
@@ -118,10 +142,10 @@ public class JfrReader implements Closeable {
             int type = getVarint();
 
             if (type == 'L' && buf.getInt(pos) == CHUNK_SIGNATURE) {
-                if (readChunk(pos)) {
+                if (readChunk(pos) && !stopAtNewChunk) {
                     continue;
                 }
-                break;
+                return null;
             }
 
             if (type == executionSample || type == nativeMethodSample) {
@@ -130,20 +154,22 @@ public class JfrReader implements Closeable {
                 if (cls == null || cls == AllocationSample.class) return (E) readAllocationSample(true);
             } else if (type == allocationOutsideTLAB || type == allocationSample) {
                 if (cls == null || cls == AllocationSample.class) return (E) readAllocationSample(false);
+            } else if (type == liveObject) {
+                if (cls == null || cls == LiveObject.class) return (E) readLiveObject();
             } else if (type == monitorEnter) {
                 if (cls == null || cls == ContendedLock.class) return (E) readContendedLock(false);
             } else if (type == threadPark) {
                 if (cls == null || cls == ContendedLock.class) return (E) readContendedLock(true);
+            } else if (type == gcHeapSummary) {
+                if (cls == null || cls == GCHeapSummary.class) return (E) readGCHeapSummary();
             } else if (type == activeSetting) {
                 readActiveSetting();
             }
 
-            if ((pos += size) <= buf.limit()) {
-                buf.position(pos);
-            } else {
-                seek(filePosition + pos);
-            }
+            seek(filePosition + pos + size);
         }
+
+        eof = true;
         return null;
     }
 
@@ -165,6 +191,16 @@ public class JfrReader implements Closeable {
         return new AllocationSample(time, tid, stackTraceId, classId, allocationSize, tlabSize);
     }
 
+    private LiveObject readLiveObject() {
+        long time = getVarlong();
+        int tid = getVarint();
+        int stackTraceId = getVarint();
+        int classId = getVarint();
+        long allocationSize = getVarlong();
+        long allocatimeTime = getVarlong();
+        return new LiveObject(time, tid, stackTraceId, classId, allocationSize, allocatimeTime);
+    }
+
     private ContendedLock readContendedLock(boolean hasTimeout) {
         long time = getVarlong();
         long duration = getVarlong();
@@ -175,6 +211,19 @@ public class JfrReader implements Closeable {
         long until = getVarlong();
         long address = getVarlong();
         return new ContendedLock(time, tid, stackTraceId, duration, classId);
+    }
+
+    private GCHeapSummary readGCHeapSummary() {
+        long time = getVarlong();
+        int gcId = getVarint();
+        int when = getVarint();
+        long start = getVarlong();
+        long committedEnd = getVarlong();
+        long committedSize = getVarlong();
+        long reservedEnd = getVarlong();
+        long reservedSize = getVarlong();
+        long used = getVarlong();
+        return new GCHeapSummary(time, gcId, committedSize, reservedSize, used);
     }
 
     private void readActiveSetting() {
@@ -201,7 +250,7 @@ public class JfrReader implements Closeable {
         long cpOffset = buf.getLong(pos + 16);
         long metaOffset = buf.getLong(pos + 24);
         if (cpOffset == 0 || metaOffset == 0) {
-            incomplete = true;
+            eof = incomplete = true;
             return false;
         }
 
@@ -226,7 +275,8 @@ public class JfrReader implements Closeable {
         seek(metaOffset);
         ensureBytes(5);
 
-        ensureBytes(getVarint() - buf.position());
+        int posBeforeSize = buf.position();
+        ensureBytes(getVarint() - (buf.position() - posBeforeSize));
         getVarint();
         getVarlong();
         getVarlong();
@@ -279,7 +329,8 @@ public class JfrReader implements Closeable {
             seek(cpOffset);
             ensureBytes(5);
 
-            ensureBytes(getVarint() - buf.position());
+            int posBeforeSize = buf.position();
+            ensureBytes(getVarint() - (buf.position() - posBeforeSize));
             getVarint();
             getVarlong();
             getVarlong();
@@ -300,10 +351,10 @@ public class JfrReader implements Closeable {
                 buf.position(buf.position() + (CHUNK_HEADER_SIZE + 3));
                 break;
             case "java.lang.Thread":
-                readThreads(type.field("group") != null);
+                readThreads(type.fields.size());
                 break;
             case "java.lang.Class":
-                readClasses(type.field("hidden") != null);
+                readClasses(type.fields.size());
                 break;
             case "jdk.types.Symbol":
                 readSymbols();
@@ -325,7 +376,7 @@ public class JfrReader implements Closeable {
         }
     }
 
-    private void readThreads(boolean hasGroup) {
+    private void readThreads(int fieldCount) {
         int count = threads.preallocate(getVarint());
         for (int i = 0; i < count; i++) {
             long id = getVarlong();
@@ -333,12 +384,12 @@ public class JfrReader implements Closeable {
             int osThreadId = getVarint();
             String javaName = getString();
             long javaThreadId = getVarlong();
-            if (hasGroup) getVarlong();
+            readFields(fieldCount - 4);
             threads.put(id, javaName != null ? javaName : osName);
         }
     }
 
-    private void readClasses(boolean hasHidden) {
+    private void readClasses(int fieldCount) {
         int count = classes.preallocate(getVarint());
         for (int i = 0; i < count; i++) {
             long id = getVarlong();
@@ -346,7 +397,7 @@ public class JfrReader implements Closeable {
             long name = getVarlong();
             long pkg = getVarlong();
             int modifiers = getVarint();
-            if (hasHidden) getVarint();
+            readFields(fieldCount - 4);
             classes.put(id, new ClassRef(name));
         }
     }
@@ -433,14 +484,22 @@ public class JfrReader implements Closeable {
         }
     }
 
+    private void readFields(int count) {
+        while (count-- > 0) {
+            getVarlong();
+        }
+    }
+
     private void cacheEventTypes() {
         executionSample = getTypeId("jdk.ExecutionSample");
         nativeMethodSample = getTypeId("jdk.NativeMethodSample");
         allocationInNewTLAB = getTypeId("jdk.ObjectAllocationInNewTLAB");
         allocationOutsideTLAB = getTypeId("jdk.ObjectAllocationOutsideTLAB");
         allocationSample = getTypeId("jdk.ObjectAllocationSample");
+        liveObject = getTypeId("profiler.LiveObject");
         monitorEnter = getTypeId("jdk.JavaMonitorEnter");
         threadPark = getTypeId("jdk.ThreadPark");
+        gcHeapSummary = getTypeId("jdk.GCHeapSummary");
         activeSetting = getTypeId("jdk.ActiveSetting");
         activeSettingHasStack = activeSetting >= 0 && typesByName.get("jdk.ActiveSetting").field("stackTrace") != null;
     }
@@ -502,14 +561,23 @@ public class JfrReader implements Closeable {
     }
 
     private void seek(long pos) throws IOException {
-        filePosition = pos;
-        ch.position(pos);
-        buf.rewind().flip();
+        long bufPosition = pos - filePosition;
+        if (bufPosition >= 0 && bufPosition <= buf.limit()) {
+            buf.position((int) bufPosition);
+        } else {
+            filePosition = pos;
+            ch.position(pos);
+            buf.rewind().flip();
+        }
     }
 
     private boolean ensureBytes(int needed) throws IOException {
         if (buf.remaining() >= needed) {
             return true;
+        }
+
+        if (ch == null) {
+            return false;
         }
 
         filePosition += buf.position();

@@ -20,7 +20,8 @@
 #include <stddef.h>
 
 
-const long DEFAULT_INTERVAL = 10000000;  // 10 ms
+const long DEFAULT_INTERVAL = 10000000;      // 10 ms
+const long DEFAULT_ALLOC_INTERVAL = 524287;  // 512 KiB
 const int DEFAULT_JSTACKDEPTH = 2048;
 
 const char* const EVENT_CPU    = "cpu";
@@ -29,7 +30,9 @@ const char* const EVENT_LOCK   = "lock";
 const char* const EVENT_WALL   = "wall";
 const char* const EVENT_ITIMER = "itimer";
 
-enum Action {
+#define SHORT_ENUM __attribute__((__packed__))
+
+enum SHORT_ENUM Action {
     ACTION_NONE,
     ACTION_START,
     ACTION_RESUME,
@@ -37,31 +40,32 @@ enum Action {
     ACTION_DUMP,
     ACTION_CHECK,
     ACTION_STATUS,
+    ACTION_MEMINFO,
     ACTION_LIST,
-    ACTION_VERSION,
-    ACTION_FULL_VERSION
+    ACTION_VERSION
 };
 
-enum Counter {
+enum SHORT_ENUM Counter {
     COUNTER_SAMPLES,
     COUNTER_TOTAL
 };
 
-enum Ring {
+enum SHORT_ENUM Ring {
     RING_ANY,
     RING_KERNEL,
     RING_USER
 };
 
 enum Style {
-    STYLE_SIMPLE     = 1,
-    STYLE_DOTTED     = 2,
-    STYLE_SIGNATURES = 4,
-    STYLE_ANNOTATE   = 8,
-    STYLE_LIB_NAMES  = 16
+    STYLE_SIMPLE       = 1,
+    STYLE_DOTTED       = 2,
+    STYLE_SIGNATURES   = 4,
+    STYLE_ANNOTATE     = 8,
+    STYLE_LIB_NAMES    = 16,
+    STYLE_NO_SEMICOLON = 32
 };
 
-enum CStack {
+enum SHORT_ENUM CStack {
     CSTACK_DEFAULT,
     CSTACK_NO,
     CSTACK_FP,
@@ -69,7 +73,13 @@ enum CStack {
     CSTACK_LBR
 };
 
-enum Output {
+enum SHORT_ENUM Clock {
+    CLK_DEFAULT,
+    CLK_TSC,
+    CLK_MONOTONIC
+};
+
+enum SHORT_ENUM Output {
     OUTPUT_NONE,
     OUTPUT_TEXT,
     OUTPUT_SVG,  // obsolete
@@ -84,8 +94,9 @@ enum JfrOption {
     NO_SYSTEM_PROPS = 0x2,
     NO_NATIVE_LIBS  = 0x4,
     NO_CPU_LOAD     = 0x8,
+    NO_HEAP_SUMMARY = 0x10,
 
-    JFR_SYNC_OPTS   = NO_SYSTEM_INFO | NO_SYSTEM_PROPS | NO_NATIVE_LIBS | NO_CPU_LOAD
+    JFR_SYNC_OPTS   = NO_SYSTEM_INFO | NO_SYSTEM_PROPS | NO_NATIVE_LIBS | NO_CPU_LOAD | NO_HEAP_SUMMARY
 };
 
 
@@ -122,9 +133,9 @@ class Arguments {
     bool _persistent;
 
     void appendToEmbeddedList(int& list, char* value);
+    const char* expandFilePattern(const char* pattern);
 
     static long long hash(const char* arg);
-    static const char* expandFilePattern(char* dest, size_t max_size, const char* pattern);
     static Output detectOutputFormat(const char* file);
     static long parseUnits(const char* str, const Multiplier* multipliers);
     static int parseTimeout(const char* str);
@@ -138,20 +149,27 @@ class Arguments {
     long _interval;
     long _alloc;
     long _lock;
+    long _wall;
     int  _jstackdepth;
     int _safe_mode;
     const char* _file;
     const char* _log;
+    const char* _loglevel;
+    const char* _unknown_arg;
+    const char* _server;
     const char* _filter;
     int _include;
     int _exclude;
+    unsigned char _mcache;
     bool _loop;
     bool _threads;
     bool _sched;
+    bool _live;
     bool _fdtransfer;
     const char* _fdtransfer_path;
     int _style;
     CStack _cstack;
+    Clock _clock;
     Output _output;
     long _chunk_size;
     long _chunk_time;
@@ -159,6 +177,7 @@ class Arguments {
     int _jfr_options;
     int _dump_traces;
     int _dump_flat;
+    unsigned int _file_num;
     const char* _begin;
     const char* _end;
     // FlameGraph parameters
@@ -177,23 +196,30 @@ class Arguments {
         _event(NULL),
         _timeout(0),
         _interval(0),
-        _alloc(0),
-        _lock(0),
+        _alloc(-1),
+        _lock(-1),
+        _wall(-1),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
         _file(NULL),
         _log(NULL),
+        _loglevel(NULL),
+        _unknown_arg(NULL),
+        _server(NULL),
         _filter(NULL),
         _filter_thread_names(NULL),
         _include(0),
         _exclude(0),
+        _mcache(0),
         _loop(false),
         _threads(false),
         _sched(false),
+        _live(false),
         _fdtransfer(false),
         _fdtransfer_path(NULL),
         _style(0),
         _cstack(CSTACK_DEFAULT),
+        _clock(CLK_DEFAULT),
         _output(OUTPUT_NONE),
         _chunk_size(100 * 1024 * 1024),
         _chunk_time(3600),
@@ -201,6 +227,7 @@ class Arguments {
         _jfr_options(0),
         _dump_traces(0),
         _dump_flat(0),
+        _file_num(0),
         _begin(NULL),
         _end(NULL),
         _title(NULL),

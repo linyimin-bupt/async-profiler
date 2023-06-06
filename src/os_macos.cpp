@@ -85,18 +85,21 @@ class MacThreadList : public ThreadList {
 JitWriteProtection::JitWriteProtection(bool enable) {
 #ifdef __aarch64__
     // Mimic pthread_jit_write_protect_np(), but save the previous state
-    u64 val = enable ? *(volatile u64*)0xfffffc118 : *(volatile u64*)0xfffffc110;
-    u64 prev;
-    asm volatile("mrs %0, s3_6_c15_c1_5" : "=r" (prev) : : );
-    if (prev != val) {
-        _prev = prev;
-        _restore = true;
-        asm volatile("msr s3_6_c15_c1_5, %0\n"
-                     "isb"
-                     : "+r" (val) : : "memory");
-    } else {
-        _restore = false;
+    if (*(volatile char*)0xfffffc10c) {
+        u64 val = enable ? *(volatile u64*)0xfffffc118 : *(volatile u64*)0xfffffc110;
+        u64 prev;
+        asm volatile("mrs %0, s3_6_c15_c1_5" : "=r" (prev) : : );
+        if (prev != val) {
+            _prev = prev;
+            _restore = true;
+            asm volatile("msr s3_6_c15_c1_5, %0\n"
+                         "isb"
+                         : "+r" (val) : : "memory");
+            return;
+        }
     }
+    // Already in the required mode, or write protection is not supported
+    _restore = false;
 #endif
 }
 
@@ -188,7 +191,7 @@ ThreadState OS::threadState(int thread_id) {
     struct thread_basic_info info;
     mach_msg_type_number_t size = sizeof(info);
     if (thread_info((thread_act_t)thread_id, THREAD_BASIC_INFO, (thread_info_t)&info, &size) != 0) {
-        return THREAD_INVALID;
+        return THREAD_UNKNOWN;
     }
     return info.run_state == TH_STATE_RUNNING ? THREAD_RUNNING : THREAD_SLEEPING;
 }
@@ -197,8 +200,8 @@ ThreadList* OS::listThreads() {
     return new MacThreadList();
 }
 
-bool OS::isJavaLibraryVisible() {
-    return true;
+bool OS::isLinux() {
+    return false;
 }
 
 SigAction OS::installSignalHandler(int signo, SigAction action, SigHandler handler) {

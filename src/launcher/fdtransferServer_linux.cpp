@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#ifdef __linux__
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,24 +31,9 @@
 #include <sys/syscall.h>
 #include <sys/wait.h>
 
-#include "fdtransfer.h"
+#include "fdtransferServer.h"
 #include "../jattach/psutil.h"
 
-
-class FdTransferServer {
-  private:
-    static int _server;
-    static int _peer;
-    static int copyFile(const char* src_name, const char* dst_name, mode_t mode);
-    static bool sendFd(int fd, struct fd_response *resp, size_t resp_size);
-
-  public:
-    static void closeServer() { close(_server); }
-    static void closePeer() { close(_peer); }
-    static bool bindServer(struct sockaddr_un *sun, socklen_t addrlen, int accept_timeout);
-    static bool acceptPeer(int *peer_pid);
-    static bool serveRequests(int peer_pid);
-};
 
 int FdTransferServer::_server;
 int FdTransferServer::_peer;
@@ -68,7 +55,13 @@ bool FdTransferServer::bindServer(struct sockaddr_un *sun, socklen_t addrlen, in
         }
     }
 
-    if (bind(_server, (const struct sockaddr*)sun, addrlen) < 0 || listen(_server, 1) < 0) {
+    if (bind(_server, (const struct sockaddr*)sun, addrlen) < 0) {
+        perror("FdTransfer bind()");
+        close(_server);
+        return false;
+    }
+
+    if (listen(_server, 1) < 0) {
         perror("FdTransfer listen()");
         close(_server);
         return false;
@@ -107,17 +100,17 @@ bool FdTransferServer::acceptPeer(int *peer_pid) {
 
 bool FdTransferServer::serveRequests(int peer_pid) {
     // Close the server side, don't need it anymore.
-    FdTransferServer::closeServer();
+    close(_server);
 
     void *perf_mmap_ringbuf[1024] = {};
     size_t ringbuf_index = 0;
     const size_t perf_mmap_size = 2 * sysconf(_SC_PAGESIZE);
 
-    while (1) {
+    while (true) {
         unsigned char request_buf[1024];
         struct fd_request *req = (struct fd_request *)request_buf;
 
-        ssize_t ret = recv(_peer, req, sizeof(request_buf), 0);
+        ssize_t ret = RESTARTABLE(recv(_peer, req, sizeof(request_buf), 0));
 
         if (ret == 0) {
             // EOF means done
@@ -258,7 +251,7 @@ bool FdTransferServer::sendFd(int fd, struct fd_response *resp, size_t resp_size
         memcpy(CMSG_DATA(cmsg), &fd, sizeof(fd));
     }
 
-    ssize_t ret = sendmsg(_peer, &msg, 0);
+    ssize_t ret = RESTARTABLE(sendmsg(_peer, &msg, 0));
     if (ret < 0) {
         perror("sendmsg()");
         return false;
@@ -267,50 +260,52 @@ bool FdTransferServer::sendFd(int fd, struct fd_response *resp, size_t resp_size
     return true;
 }
 
-static int single_pid_server(int pid) {
+bool FdTransferServer::runOnce(int pid, const char *path) {
     // get its nspid prior to moving to its PID namespace.
     int nspid;
-    uid_t _target_uid;
-    gid_t _target_gid;
-    if (get_process_info(pid, &_target_uid, &_target_gid, &nspid)) {
+    uid_t target_uid;
+    gid_t target_gid;
+    if (get_process_info(pid, &target_uid, &target_gid, &nspid)) {
         fprintf(stderr, "Process %d not found\n", pid);
-        return 1;
+        return false;
     }
 
     struct sockaddr_un sun;
     socklen_t addrlen;
-    if (!socketPathForPid(nspid, &sun, &addrlen)) {
+    if (!socketPath(path, &sun, &addrlen)) {
         fprintf(stderr, "Path too long\n");
-        return 1;
+        return false;
     }
 
-    // Create the server before forking, so w're ready to accept connections once our parent
-    // exits.
+    // Create the server before forking, so we're ready to accept connections once our parent exits.
 
-    if (enter_ns(pid, "net") == -1) {
-        fprintf(stderr, "Failed to enter the net NS of target process %d\n", pid);
-        return 1;
+    // Abstract namespace UDS requires us to move network namespace.
+    if (sun.sun_path[0] == '\0') {
+        if (enter_ns(pid, "net") == -1) {
+            fprintf(stderr, "Failed to enter the net NS of target process %d\n", pid);
+            return false;
+        }
     }
 
-    if (!FdTransferServer::bindServer(&sun, addrlen, 10)) {
-        return 1;
+    if (!bindServer(&sun, addrlen, 30)) {
+        return false;
     }
 
     if (!enter_ns(pid, "pid") == -1) {
         fprintf(stderr, "Failed to enter the PID NS of target process %d\n", pid);
-        return 1;
+        return false;
     }
 
     // CLONE_NEWPID affects children only - so we fork here.
-    if (0 == fork()) {
-        return FdTransferServer::acceptPeer(&nspid) && FdTransferServer::serveRequests(nspid) ? 0 : 1;
+    if (fork() == 0) {
+        return acceptPeer(&nspid) && serveRequests(nspid);
     } else {
         // Exit now, let our caller continue.
-        return 0;
+        return true;
     }
 }
 
-static int path_server(const char *path) {
+bool FdTransferServer::runLoop(const char *path) {
     struct sockaddr_un sun;
     socklen_t addrlen;
 
@@ -321,58 +316,42 @@ static int path_server(const char *path) {
 
     if (!socketPath(path, &sun, &addrlen)) {
         fprintf(stderr, "Path '%s' is too long\n", path);
-        return 1;
+        return false;
     }
 
     if (!FdTransferServer::bindServer(&sun, addrlen, 0)) {
-        return 1;
+        return false;
     }
 
     printf("Server ready at '%s'\n", path);
 
-    while (1) {
+    while (true) {
         int peer_pid = 0;
-        if (!FdTransferServer::acceptPeer(&peer_pid)) {
-            return 1;
+        if (!acceptPeer(&peer_pid)) {
+            return false;
         }
 
         // Enter its PID namespace.
         if (enter_ns(peer_pid, "pid") == -1) {
             fprintf(stderr, "Failed to enter the PID NS of target process %d\n", peer_pid);
-            return 1;
+            return false;
         }
 
         printf("Serving PID %d\n", peer_pid);
 
         // We fork(), to actually move a PID namespace.
-        if (0 == fork()) {
-            return FdTransferServer::serveRequests(0) ? 0 : 1;
+        if (fork() == 0) {
+            return FdTransferServer::serveRequests(0);
         } else {
-            FdTransferServer::closePeer();
+            close(_peer);
         }
 
         // Move back to our original PID namespace (reverts pid_for_children)
         if (enter_ns(getpid(), "pid") == -1) {
             fprintf(stderr, "Failed to exit the PID NS of target process %d\n", peer_pid);
-            return 1;
+            return false;
         }
     }
 }
 
-int main(int argc, const char** argv) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <pid>|<path>\n", argv[0]);
-        return 1;
-    }
-
-    int pid = atoi(argv[1]);
-    // 2 modes:
-    // pid == 0 - bind on a path and accept requests forever, from any PID, until being killed
-    // pid != 0 - bind on an abstract namespace UDS for that PID, accept requests only from that PID
-    //            until the single connection is closed.
-    if (pid != 0) {
-        return single_pid_server(pid);
-    } else {
-        return path_server(argv[1]);
-    }
-}
+#endif // __linux__
