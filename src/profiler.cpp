@@ -1325,7 +1325,7 @@ void Profiler::dumpFlameGraph(std::ostream& out, Arguments& args, bool tree) {
         }
     }
 
-    FlameGraph flamegraph(args._title == NULL ? title : args._title, args._counter, args._minwidth, args._reverse);
+    FlameGraph flamegraph(args._title == NULL ? title : args._title, args._counter, args._minwidth, args._reverse, args._interval);
     FrameName fn(args, args._style & ~STYLE_ANNOTATE, _epoch, _thread_names_lock, _thread_names);
 
     std::vector<CallTraceSample*> samples;

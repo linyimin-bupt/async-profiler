@@ -79,6 +79,7 @@ class FlameGraph {
     Counter _counter;
     double _minwidth;
     bool _reverse;
+    long _interval;
 
     void printFrame(std::ostream& out, const std::string& name, const Trie& f, int level, u64 x);
     void printTreeFrame(std::ostream& out, const Trie& f, int level);
@@ -86,11 +87,12 @@ class FlameGraph {
     int frameType(std::string& name, const Trie& f);
 
   public:
-    FlameGraph(const char* title, Counter counter, double minwidth, bool reverse) :
+    FlameGraph(const char* title, Counter counter, double minwidth, bool reverse, long _interval) :
         _root(),
         _title(title),
         _counter(counter),
         _minwidth(minwidth),
+        _interval(_interval),
         _reverse(reverse) {
         _buf[sizeof(_buf) - 1] = 0;
     }
