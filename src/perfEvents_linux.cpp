@@ -174,11 +174,16 @@ static int pthread_setspecific_hook(pthread_key_t key, const void* value) {
 }
 
 static void** lookupThreadEntry() {
+    if (!VM::loaded()) {
+        static void* dummy_pthread_entry;
+        return &dummy_pthread_entry;
+    }
+
     // Depending on Zing version, pthread_setspecific is called either from libazsys.so or from libjvm.so
     if (VM::isZing()) {
         CodeCache* libazsys = Profiler::instance()->findLibraryByName("libazsys");
         if (libazsys != NULL) {
-            void** entry = libazsys->findGlobalOffsetEntry((void*)&pthread_setspecific);
+            void** entry = libazsys->findImport(im_pthread_setspecific);
             if (entry != NULL) {
                 return entry;
             }
@@ -186,7 +191,7 @@ static void** lookupThreadEntry() {
     }
 
     CodeCache* lib = Profiler::instance()->findJvmLibrary("libj9thr");
-    return lib != NULL ? lib->findGlobalOffsetEntry((void*)&pthread_setspecific) : NULL;
+    return lib != NULL ? lib->findImport(im_pthread_setspecific) : NULL;
 }
 
 
@@ -462,7 +467,7 @@ struct PerfEventType {
 PerfEventType PerfEventType::AVAILABLE_EVENTS[] = {
     {"cpu",          DEFAULT_INTERVAL, PERF_TYPE_SOFTWARE, PERF_COUNT_SW_CPU_CLOCK},
     {"page-faults",                 1, PERF_TYPE_SOFTWARE, PERF_COUNT_SW_PAGE_FAULTS},
-    {"context-switches",            1, PERF_TYPE_SOFTWARE, PERF_COUNT_SW_CONTEXT_SWITCHES},
+    {"context-switches",            2, PERF_TYPE_SOFTWARE, PERF_COUNT_SW_CONTEXT_SWITCHES},
 
     {"cycles",                1000000, PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES},
     {"instructions",          1000000, PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS},
@@ -542,18 +547,19 @@ int PerfEvents::_max_events = 0;
 PerfEvent* PerfEvents::_events = NULL;
 PerfEventType* PerfEvents::_event_type = NULL;
 long PerfEvents::_interval;
+int PerfEvents::_signal;
 Ring PerfEvents::_ring;
 CStack PerfEvents::_cstack;
 bool PerfEvents::_use_mmap_page;
+bool PerfEvents::_running = false;
 
 int PerfEvents::createForThread(int tid) {
-    if (tid >= _max_events) {
-        Log::warn("tid[%d] > pid_max[%d]. Restart profiler after changing pid_max", tid, _max_events);
+    if (!__atomic_load_n(&_running, __ATOMIC_ACQUIRE)) {
         return -1;
     }
 
-    PerfEventType* event_type = _event_type;
-    if (event_type == NULL) {
+    if (tid >= _max_events) {
+        Log::warn("tid[%d] > pid_max[%d]. Restart profiler after changing pid_max", tid, _max_events);
         return -1;
     }
 
@@ -563,6 +569,7 @@ int PerfEvents::createForThread(int tid) {
         return -1;
     }
 
+    PerfEventType* event_type = _event_type;
     struct perf_event_attr attr = {0};
     attr.size = sizeof(attr);
     attr.type = event_type->type;
@@ -635,7 +642,7 @@ int PerfEvents::createForThread(int tid) {
     ex.pid = tid;
 
     int err;
-    if (fcntl(fd, F_SETFL, O_ASYNC) < 0 || fcntl(fd, F_SETSIG, SIGPROF) < 0 || fcntl(fd, F_SETOWN_EX, &ex) < 0) {
+    if (fcntl(fd, F_SETFL, O_ASYNC) < 0 || fcntl(fd, F_SETSIG, _signal) < 0 || fcntl(fd, F_SETOWN_EX, &ex) < 0) {
         err = errno;
         Log::warn("perf_event fcntl failed: %s", strerror(err));
     } else if (ioctl(fd, PERF_EVENT_IOC_RESET, 0) < 0 || ioctl(fd, PERF_EVENT_IOC_REFRESH, 1) < 0) {
@@ -833,19 +840,22 @@ Error PerfEvents::start(Arguments& args) {
         _max_events = max_events;
     }
 
+    _signal = args._signal == 0 ? SIGPROF : args._signal & 0xff;
+
     if (VM::isOpenJ9()) {
         if (_cstack == CSTACK_DEFAULT) _cstack = CSTACK_DWARF;
-        OS::installSignalHandler(SIGPROF, signalHandlerJ9);
+        OS::installSignalHandler(_signal, signalHandlerJ9);
         Error error = J9StackTraces::start(args);
         if (error) {
             return error;
         }
     } else {
-        OS::installSignalHandler(SIGPROF, signalHandler);
+        OS::installSignalHandler(_signal, signalHandler);
     }
 
     // Enable pthread hook before traversing currently running threads
-    __atomic_store_n(_pthread_entry, (void*)pthread_setspecific_hook, __ATOMIC_RELEASE);
+    *_pthread_entry = (void*)pthread_setspecific_hook;
+    __atomic_store_n(&_running, true, __ATOMIC_RELEASE);
 
     // Create perf_events for all existing threads
     int err;
@@ -859,7 +869,8 @@ Error PerfEvents::start(Arguments& args) {
     delete thread_list;
 
     if (!created) {
-        __atomic_store_n(_pthread_entry, (void*)pthread_setspecific, __ATOMIC_RELEASE);
+        *_pthread_entry = (void*)pthread_setspecific;
+        __atomic_store_n(&_running, false, __ATOMIC_RELEASE);
         J9StackTraces::stop();
         if (err == EACCES || err == EPERM) {
             return Error("No access to perf events. Try --fdtransfer or --all-user option or 'sysctl kernel.perf_event_paranoid=1'");
@@ -871,7 +882,8 @@ Error PerfEvents::start(Arguments& args) {
 }
 
 void PerfEvents::stop() {
-    __atomic_store_n(_pthread_entry, (void*)pthread_setspecific, __ATOMIC_RELEASE);
+    *_pthread_entry = (void*)pthread_setspecific;
+    __atomic_store_n(&_running, false, __ATOMIC_RELEASE);
     for (int i = 0; i < _max_events; i++) {
         destroyForThread(i);
     }

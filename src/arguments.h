@@ -150,7 +150,8 @@ class Arguments {
     long _alloc;
     long _lock;
     long _wall;
-    int  _jstackdepth;
+    int _jstackdepth;
+    int _signal;
     int _safe_mode;
     const char* _file;
     const char* _log;
@@ -200,6 +201,7 @@ class Arguments {
         _lock(-1),
         _wall(-1),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
+        _signal(0),
         _safe_mode(0),
         _file(NULL),
         _log(NULL),
@@ -245,7 +247,7 @@ class Arguments {
 
     bool hasOutputFile() const {
         return _file != NULL &&
-            (_action == ACTION_STOP || _action == ACTION_DUMP ? _output != OUTPUT_JFR : _action >= ACTION_STATUS);
+            (_action == ACTION_STOP || _action == ACTION_DUMP ? _output != OUTPUT_JFR : _action >= ACTION_CHECK);
     }
 
     bool hasOption(JfrOption option) const {

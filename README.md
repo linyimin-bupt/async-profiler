@@ -418,6 +418,8 @@ The following is a complete list of the command-line options accepted by
   a star `*` that denotes any (possibly empty) sequence of characters.  
   Example: `./profiler.sh -I 'Primes.*' -I 'java/*' -X '*Unsafe.park*' 8983`
 
+* `-L level` - log level: `debug`, `info`, `warn`, `error` or `none`.
+
 * `--title TITLE`, `--minwidth PERCENT`, `--reverse` - FlameGraph parameters.  
   Example: `./profiler.sh -f profile.html --title "Sample CPU profile" --minwidth 0.5 8983`
 
@@ -448,6 +450,9 @@ The following is a complete list of the command-line options accepted by
   By default, C stack is shown in cpu, itimer, wall-clock and perf-events profiles.
   Java-level events like `alloc` and `lock` collect only Java stack.
 
+* `--signal NUM` - use alternative signal for cpu or wall clock profiling.
+  To change both signals, specify two numbers separated by a slash: `--signal SIGCPU/SIGWALL`.
+
 * `--clock SOURCE` - clock source for JFR timestamps: `tsc` (default)
   or `monotonic` (equivalent for `CLOCK_MONOTONIC`).
 
@@ -465,7 +470,8 @@ The following is a complete list of the command-line options accepted by
   synchronously with the profiler. The output .jfr file will include all regular
   JFR events, except that execution samples will be obtained from async-profiler.
   This option implies `-o jfr`.
-    - `CONFIG` is a predefined JFR profile or a JFR configuration file (.jfc).
+    - `CONFIG` is a predefined JFR profile or a JFR configuration file (.jfc)
+               or a list of JFR events started with `+`
 
   Example: `./profiler.sh -e cpu --jfrsync profile -f combined.jfr 8983`
 
