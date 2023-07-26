@@ -32,6 +32,7 @@
 	var root, rootLevel, px, pattern;
 	var reverse = /*reverse:*/false;
 	const levels = Array(/*depth:*/0);
+	const interval = /*interval:*/50;
 	for (let h = 0; h < levels.length; h++) {
 		levels[h] = [];
 	}
@@ -73,6 +74,10 @@
 	function samples(n) {
 		return n === 1 ? '1 sample' : n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',') + ' samples';
 	}
+
+	function cost(n) {
+	    return n === 1 ? interval / 1000_000 + ' ms, ' : (n * interval / 1000_000).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',') + ' ms, ';
+    }
 
 	function pct(a, b) {
 		return a >= b ? '100' : (100 * a / b).toFixed(2);
@@ -183,7 +188,7 @@
 				hl.style.top = ((reverse ? h * 16 : canvasHeight - (h + 1) * 16) + canvas.offsetTop) + 'px';
 				hl.firstChild.textContent = f.title;
 				hl.style.display = 'block';
-				canvas.title = f.title + '\n(' + samples(f.width) + f.details + ', ' + pct(f.width, levels[0][0].width) + '%)';
+				canvas.title = f.title + '\n(' + cost(f.width) + samples(f.width) + f.details + ', ' + pct(f.width, levels[0][0].width) + '%)';
 				canvas.style.cursor = 'pointer';
 				canvas.onclick = function() {
 					if (f != root) {

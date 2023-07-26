@@ -122,6 +122,9 @@ void FlameGraph::dump(std::ostream& out, bool tree) {
         tail = printTill(out, tail, "/*depth:*/0");
         out << depth;
 
+        tail = printTill(out, tail, "/*interval:*/50");
+        out << _interval;
+
         tail = printTill(out, tail, "/*frames:*/");
 
         printFrame(out, "all", _root, 0, 0);

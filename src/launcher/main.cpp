@@ -65,6 +65,7 @@ static const char USAGE_STRING[] =
     "  -o fmt            output format: flat|traces|collapsed|flamegraph|tree|jfr\n"
     "  -I include        output only stack traces containing the specified pattern\n"
     "  -X exclude        exclude stack traces with the specified pattern\n"
+    "  -L level          log level: debug|info|warn|error|none\n"
     "  -v, --version     display version string\n"
     "\n"
     "  --title string    FlameGraph title\n"
@@ -80,6 +81,7 @@ static const char USAGE_STRING[] =
     "  --all-user        only include user-mode events\n"
     "  --sched           group threads by scheduling policy\n"
     "  --cstack mode     how to traverse C stack: fp|dwarf|lbr|no\n"
+    "  --signal num      use alternative signal for cpu or wall clock profiling\n"
     "  --clock source    clock source for JFR timestamps: tsc|monotonic\n"
     "  --begin function  begin profiling when function is executed\n"
     "  --end function    end profiling when function is executed\n"
@@ -419,6 +421,9 @@ int main(int argc, const char** argv) {
         } else if (arg == "-X" || arg == "--exclude") {
             format << ",exclude=" << args.next();
 
+        } else if (arg == "-L" || arg == "--log") {
+            format << ",loglevel=" << args.next();
+
         } else if (arg == "--filter") {
             format << ",filter=" << String(args.next()).replace(',', ";");
 
@@ -436,7 +441,7 @@ int main(int argc, const char** argv) {
 
         } else if (arg == "--alloc" || arg == "--lock" || arg == "--wall" ||
                    arg == "--chunksize" || arg == "--chunktime" ||
-                   arg == "--cstack" || arg == "--clock" || arg == "--begin" || arg == "--end") {
+                   arg == "--cstack" || arg == "--signal" || arg == "--clock" || arg == "--begin" || arg == "--end") {
             params << "," << (arg.str() + 2) << "=" << args.next();
 
         } else if (arg == "--ttsp") {

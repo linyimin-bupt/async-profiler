@@ -150,7 +150,8 @@ class Arguments {
     long _alloc;
     long _lock;
     long _wall;
-    int  _jstackdepth;
+    int _jstackdepth;
+    int _signal;
     int _safe_mode;
     const char* _file;
     const char* _log;
@@ -184,6 +185,7 @@ class Arguments {
     const char* _title;
     double _minwidth;
     bool _reverse;
+    const char* _filter_thread_names;
 
     Arguments(bool persistent = false) :
         _buf(NULL),
@@ -199,6 +201,7 @@ class Arguments {
         _lock(-1),
         _wall(-1),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
+        _signal(0),
         _safe_mode(0),
         _file(NULL),
         _log(NULL),
@@ -206,6 +209,7 @@ class Arguments {
         _unknown_arg(NULL),
         _server(NULL),
         _filter(NULL),
+        _filter_thread_names(NULL),
         _include(0),
         _exclude(0),
         _mcache(0),
@@ -243,7 +247,7 @@ class Arguments {
 
     bool hasOutputFile() const {
         return _file != NULL &&
-            (_action == ACTION_STOP || _action == ACTION_DUMP ? _output != OUTPUT_JFR : _action >= ACTION_STATUS);
+            (_action == ACTION_STOP || _action == ACTION_DUMP ? _output != OUTPUT_JFR : _action >= ACTION_CHECK);
     }
 
     bool hasOption(JfrOption option) const {
